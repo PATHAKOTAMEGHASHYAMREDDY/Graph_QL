@@ -1,15 +1,9 @@
-const mysql = require('mysql2');
 require('dotenv').config();
+const { Pool } = require('pg');
 
-const pool = mysql.createPool({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
-  waitForConnections: true,
-  connectionLimit: parseInt(process.env.DB_CONNECTION_LIMIT) || 10
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL.replace('sslmode=require', 'sslmode=verify-full'),
+  ssl: { rejectUnauthorized: false }
 });
 
-const promisePool = pool.promise();
-
-module.exports = promisePool;
+module.exports = pool;

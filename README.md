@@ -1,36 +1,8 @@
-# GraphQL MySQL CRUD Demo
-
-## Setup
-
-1. Install dependencies:
-```
-npm install
-```
-
-2. Create `.env` file from example:
-```
-cp .env.example .env
-```
-
-3. Update database credentials in `.env` file
-
-4. Create database and table:
-```
-mysql -u root -p < database.sql
-```
-
-5. Start server:
-```
-npm start
-```
-
-5. Open Apollo Studio: http://localhost:4000/graphql
-
 ## Example Queries
 
 ### Fetch all users
 ```graphql
-{
+query {
   users {
     id
     name
@@ -41,7 +13,7 @@ npm start
 
 ### Fetch single user
 ```graphql
-{
+query {
   user(id: 1) {
     id
     name
