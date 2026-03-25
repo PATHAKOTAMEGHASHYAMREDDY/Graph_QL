@@ -16,7 +16,7 @@ const resolvers = {
   Mutation: {
     createUser: async (_, { name, email }) => {
       const { rows } = await db.query(
-        'INSERT INTO users (name, email) VALUES ($1, $2) RETURNING *',
+        'INSERT INTO users (name, email, english, tamil, maths, total) VALUES ($1, $2, 0, 0, 0, 0) RETURNING *',
         [name, email]
       );
       return rows[0];
@@ -27,12 +27,12 @@ const resolvers = {
       const values = [];
 
       if (name) {
-        updates.push(`name = $${values.length + 1}`);
         values.push(name);
+        updates.push(`name = $${values.length}`);
       }
       if (email) {
-        updates.push(`email = $${values.length + 1}`);
         values.push(email);
+        updates.push(`email = $${values.length}`);
       }
 
       values.push(id);
@@ -40,6 +40,15 @@ const resolvers = {
       const { rows } = await db.query(
         `UPDATE users SET ${updates.join(', ')} WHERE id = $${values.length} RETURNING *`,
         values
+      );
+      return rows[0];
+    },
+
+    updateMarks: async (_, { id, english, tamil, maths }) => {
+      const total = english + tamil + maths;
+      const { rows } = await db.query(
+        `UPDATE users SET english = $1, tamil = $2, maths = $3, total = $4 WHERE id = $5 RETURNING *`,
+        [english, tamil, maths, total, id]
       );
       return rows[0];
     },
