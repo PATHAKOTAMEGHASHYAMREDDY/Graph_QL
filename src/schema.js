@@ -7,6 +7,9 @@ const typeDefs = `
     tamil: Int
     maths: Int
     total: Int
+    englishStatus: String
+    tamilStatus: String
+    mathsStatus: String
   }
 
   type Query {
