@@ -70,6 +70,17 @@ const resolvers = {
     },
 
     updateMarks: async (_, { id, english, tamil, maths }) => {
+      // Validate marks are between 0 and 100
+      if (english < 0 || english > 100) {
+        throw new Error('English marks must be between 0 and 100');
+      }
+      if (tamil < 0 || tamil > 100) {
+        throw new Error('Tamil marks must be between 0 and 100');
+      }
+      if (maths < 0 || maths > 100) {
+        throw new Error('Maths marks must be between 0 and 100');
+      }
+
       const total = english + tamil + maths;
       const englishStatus = getStatus(english);
       const tamilStatus = getStatus(tamil);
