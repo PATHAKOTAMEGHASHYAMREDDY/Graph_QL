@@ -99,8 +99,11 @@ const resolvers = {
         throw new GraphQLError('OTP has expired. Please request a new one.');
       }
 
-      if (!password || password.length < 6) {
-        throw new GraphQLError('Password must be at least 6 characters.');
+      // The frontend sends SHA-256(password) — a 64-char hex string.
+      // We validate the format, then bcrypt it for storage.
+      // This ensures plaintext passwords never travel over the network.
+      if (!password || !/^[0-9a-f]{64}$/.test(password)) {
+        throw new GraphQLError('Invalid password format received from client.');
       }
 
       // Check if already registered (race condition guard)

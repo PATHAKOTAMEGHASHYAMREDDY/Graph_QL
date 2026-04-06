@@ -8,6 +8,9 @@ const typeDefs = require('./schema');
 const resolvers = require('./resolvers');
 const { verifyToken } = require('./auth');
 
+// REST auth router (POST /api/auth/login, /signup; GET /api/auth/me)
+const restAuthRouter = require('./rest-auth');
+
 const app = express();
 const PORT = process.env.PORT || 4000;
 
@@ -40,6 +43,13 @@ async function startServer() {
 
   app.use(bodyParser.json());
 
+  // ── REST auth routes (no GraphQL required) ──────────────────────────────
+  // POST   /api/auth/signup  — Register a new faculty member
+  // POST   /api/auth/login   — Authenticate and receive a JWT (returns 401 on failure)
+  // GET    /api/auth/me      — Protected: returns faculty profile (returns 401 if token invalid)
+  app.use('/api/auth', restAuthRouter);
+
+  // ── GraphQL endpoint ────────────────────────────────────────────────────
   app.use('/graphql', expressMiddleware(server, {
     // Extract JWT from Authorization header and pass facultyId in context
     context: async ({ req }) => {
@@ -57,11 +67,17 @@ async function startServer() {
 
   // Health check endpoint
   app.get('/health', (req, res) => {
-    res.json({ status: 'ok', message: 'Server is running' });
+    res.json({ status: 'ok', message: 'Server is running', endpoints: {
+      graphql : '/graphql',
+      login   : 'POST /api/auth/login',
+      signup  : 'POST /api/auth/signup',
+      me      : 'GET  /api/auth/me  (requires Bearer token)',
+    }});
   });
 
   app.listen(PORT, () => {
-    console.log(`🚀 Server running at http://localhost:${PORT}/graphql`);
+    console.log(`🚀 GraphQL  → http://localhost:${PORT}/graphql`);
+    console.log(`🔐 REST Auth→ http://localhost:${PORT}/api/auth/login | /signup | /me`);
   });
 }
 
