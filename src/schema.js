@@ -8,9 +8,22 @@ const typeDefs = `
     createdAt: String
   }
 
+  # Debug info for client-side rate limiting visibility
+  type DebugInfo {
+    type: String!
+    email: String
+    maxAttempts: Int
+    remainingAttempts: Int
+    waitMinutes: Int
+    reason: String
+    timestamp: String!
+    message: String
+  }
+
   type AuthPayload {
     token: String!
     faculty: Faculty!
+    debug: DebugInfo
   }
 
   # ── Student (User) ────────────────────────────────────────────────────────

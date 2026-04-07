@@ -2,6 +2,56 @@ const db = require('./db');
 const { generateOtp, sendOtpEmail, signToken, verifyToken, hashPassword, comparePassword } = require('./auth');
 const { GraphQLError } = require('graphql');
 
+// In-memory rate limiting store for GraphQL login
+const loginAttempts = new Map();
+
+// Rate limit configuration
+const RATE_LIMIT_WINDOW = 5 * 60 * 1000; // 5 minutes
+const MAX_ATTEMPTS = 3;
+
+// Helper: Check rate limit for an email
+function checkRateLimit(email) {
+  const now = Date.now();
+  const key = email.toLowerCase().trim();
+  const attempts = loginAttempts.get(key);
+  
+  if (!attempts) {
+    return { allowed: true, remaining: MAX_ATTEMPTS - 1 };
+  }
+  
+  // Clean old attempts outside the window
+  const validAttempts = attempts.filter(time => now - time < RATE_LIMIT_WINDOW);
+  
+  if (validAttempts.length >= MAX_ATTEMPTS) {
+    const oldestAttempt = validAttempts[0];
+    const resetTime = oldestAttempt + RATE_LIMIT_WINDOW;
+    const waitMinutes = Math.ceil((resetTime - now) / 60000);
+    return { 
+      allowed: false, 
+      waitMinutes,
+      message: `Too many failed login attempts. Please try again after ${waitMinutes} minutes.`
+    };
+  }
+  
+  return { allowed: true, remaining: MAX_ATTEMPTS - validAttempts.length - 1 };
+}
+
+// Helper: Record a failed attempt
+function recordFailedAttempt(email) {
+  const key = email.toLowerCase().trim();
+  const now = Date.now();
+  const attempts = loginAttempts.get(key) || [];
+  attempts.push(now);
+  loginAttempts.set(key, attempts);
+  console.log(`⚠️  Failed login attempt recorded for ${key}. Total attempts: ${attempts.length}`);
+}
+
+// Helper: Clear attempts on successful login
+function clearAttempts(email) {
+  const key = email.toLowerCase().trim();
+  loginAttempts.delete(key);
+}
+
 const getStatus = (marks) => marks >= 40 ? 'Pass' : 'Fail';
 
 // Helper: throw if not authenticated
@@ -133,16 +183,64 @@ const resolvers = {
     },
 
     loginFaculty: async (_, { email, password }) => {
+      // Check rate limit first
+      const rateLimitCheck = checkRateLimit(email);
+      
+      if (!rateLimitCheck.allowed) {
+        console.log(`🚫 Rate limit blocked login for ${email}. Wait ${rateLimitCheck.waitMinutes} minutes.`);
+        throw new GraphQLError(rateLimitCheck.message, {
+          extensions: { 
+            code: 'RATE_LIMITED',
+            http: { status: 429 },
+            // These will be visible in browser console
+            debug: {
+              type: 'RATE_LIMIT',
+              email: email.toLowerCase().trim(),
+              maxAttempts: MAX_ATTEMPTS,
+              waitMinutes: rateLimitCheck.waitMinutes,
+              timestamp: new Date().toISOString(),
+              message: 'Too many failed login attempts for this account'
+            }
+          }
+        });
+      }
+
       const { rows } = await db.query('SELECT * FROM faculty WHERE email = $1', [email]);
       if (rows.length === 0) {
-        throw new GraphQLError('No account found with this email.');
+        recordFailedAttempt(email);
+        throw new GraphQLError('No account found with this email.', {
+          extensions: {
+            code: 'USER_NOT_FOUND',
+            debug: {
+              type: 'LOGIN_FAILED',
+              reason: 'Account does not exist',
+              remainingAttempts: rateLimitCheck.remaining,
+              timestamp: new Date().toISOString()
+            }
+          }
+        });
       }
 
       const faculty = rows[0];
       const valid = await comparePassword(password, faculty.password_hash);
       if (!valid) {
-        throw new GraphQLError('Incorrect password. Please try again.');
+        recordFailedAttempt(email);
+        throw new GraphQLError('Incorrect password. Please try again.', {
+          extensions: {
+            code: 'INVALID_PASSWORD',
+            debug: {
+              type: 'LOGIN_FAILED',
+              reason: 'Wrong password',
+              remainingAttempts: Math.max(0, rateLimitCheck.remaining),
+              timestamp: new Date().toISOString()
+            }
+          }
+        });
       }
+
+      // Success - clear failed attempts
+      clearAttempts(email);
+      console.log(`✅ Successful login for ${email}`);
 
       const facultyData = {
         ...faculty,
@@ -151,7 +249,16 @@ const resolvers = {
       };
       const token = signToken({ facultyId: faculty.id, email: faculty.email });
 
-      return { token, faculty: facultyData };
+      return { 
+        token, 
+        faculty: facultyData,
+        // Add debug info to successful response
+        debug: {
+          type: 'LOGIN_SUCCESS',
+          remainingAttempts: MAX_ATTEMPTS,
+          timestamp: new Date().toISOString()
+        }
+      };
     },
 
     // ── Student CRUD (all require auth) ───────────────────────────────────
