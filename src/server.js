@@ -11,6 +11,7 @@ require('dotenv').config();
 const typeDefs = require('./schema');
 const resolvers = require('./resolvers');
 const { verifyToken } = require('./auth');
+const db = require('./db'); // Add database connection
 
 // REST auth router (POST /api/auth/login, /signup; GET /api/auth/me)
 const restAuthRouter = require('./rest-auth');
@@ -153,12 +154,35 @@ async function startServer() {
     }
   });
 
-  // File upload endpoint with error handling (rate limited)
+  // File upload endpoint with error handling (rate limited + authenticated)
   app.post('/api/upload', uploadLimiter, (req, res) => {
-    console.log('Upload endpoint called:', req.headers['content-type']);
+    console.log('📤 Upload endpoint hit');
     
-    upload.single('file')(req, res, (err) => {
-      console.log('Multer callback executed');
+    // Verify JWT token first
+    const authHeader = req.headers.authorization || '';
+    console.log('Auth header present:', authHeader ? 'Yes' : 'No');
+    
+    let facultyId = null;
+    
+    if (authHeader.startsWith('Bearer ')) {
+      const token = authHeader.slice(7);
+      console.log('Token extracted, verifying...');
+      const decoded = verifyToken(token);
+      console.log('Decoded token:', decoded);
+      if (decoded && decoded.facultyId) {
+        facultyId = decoded.facultyId;
+      }
+    }
+    
+    console.log('Faculty ID:', facultyId);
+    
+    if (!facultyId) {
+      console.log('❌ No faculty ID - rejecting upload');
+      return res.status(401).json({ error: 'Unauthorized. Please log in.' });
+    }
+    
+    upload.single('file')(req, res, async (err) => {
+      console.log('Multer processing complete');
       
       if (err instanceof multer.MulterError) {
         console.error('Multer error:', err);
@@ -169,25 +193,52 @@ async function startServer() {
       }
 
       if (!req.file) {
-        console.log('No file in req.file');
+        console.log('❌ No file in request');
         return res.status(400).json({ error: 'No file uploaded' });
       }
 
-      const fileInfo = {
-        filename: req.file.filename,
-        originalname: req.file.originalname,
-        size: req.file.size,
-        mimetype: req.file.mimetype,
-        path: req.file.path,
-        uploadDate: new Date().toISOString()
-      };
+      console.log('File received:', req.file.originalname);
+      console.log('Attempting database insert...');
 
-      console.log('File saved:', fileInfo);
+      try {
+        // Save file metadata to database
+        const result = await db.query(
+          `INSERT INTO documents (faculty_id, filename, original_name, file_path, file_size, mime_type)
+           VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+          [
+            facultyId,
+            req.file.filename,
+            req.file.originalname,
+            req.file.path,
+            req.file.size,
+            req.file.mimetype
+          ]
+        );
 
-      res.status(200).json({ 
-        message: 'File uploaded successfully',
-        file: fileInfo
-      });
+        const document = result.rows[0];
+        console.log(`✅ File saved to DB with ID: ${document.id}`);
+
+        res.status(200).json({ 
+          message: 'File uploaded successfully',
+          document: {
+            id: document.id,
+            filename: document.filename,
+            originalName: document.original_name,
+            size: document.file_size,
+            mimeType: document.mime_type,
+            uploadDate: document.upload_date,
+            facultyId: document.faculty_id
+          }
+        });
+      } catch (dbError) {
+        console.error('❌ Database error:', dbError.message);
+        console.error('Full error:', dbError);
+        // Delete the file if DB insert fails
+        fs.unlink(req.file.path, (unlinkErr) => {
+          if (unlinkErr) console.error('Failed to delete file:', unlinkErr);
+        });
+        res.status(500).json({ error: 'Failed to save file metadata', details: dbError.message });
+      }
     });
   });
 

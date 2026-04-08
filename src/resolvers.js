@@ -63,6 +63,20 @@ function requireAuth(context) {
   }
 }
 
+// Helper: map DB row to Document shape
+function mapDocument(row) {
+  return {
+    id: row.id,
+    facultyId: row.faculty_id,
+    filename: row.filename,
+    originalName: row.original_name,
+    fileSize: row.file_size,
+    mimeType: row.mime_type,
+    uploadDate: row.upload_date ? row.upload_date.toISOString() : null,
+    description: row.description
+  };
+}
+
 // Helper: map DB row to Student shape
 function mapStudent(row) {
   return {
@@ -102,6 +116,25 @@ const resolvers = {
         classSection: rows[0].class_section,
         createdAt: rows[0].created_at ? rows[0].created_at.toISOString() : null
       } : null;
+    },
+
+    // Get documents for logged-in faculty
+    myDocuments: async (_, __, context) => {
+      requireAuth(context);
+      const { rows } = await db.query(
+        'SELECT * FROM documents WHERE faculty_id = $1 ORDER BY upload_date DESC',
+        [context.facultyId]
+      );
+      return rows.map(mapDocument);
+    },
+
+    // Get all documents (for admin purposes)
+    allDocuments: async (_, __, context) => {
+      requireAuth(context);
+      const { rows } = await db.query(
+        'SELECT * FROM documents ORDER BY upload_date DESC'
+      );
+      return rows.map(mapDocument);
     }
   },
 
@@ -321,6 +354,51 @@ const resolvers = {
       );
       if (result.rowCount === 0) throw new GraphQLError('Student not found or unauthorized.');
       return `Student with id ${id} deleted successfully`;
+    },
+
+    // ── Document Mutations ─────────────────────────────────────────────────
+
+    deleteDocument: async (_, { id }, context) => {
+      requireAuth(context);
+      
+      // First check if document belongs to this faculty
+      const { rows } = await db.query(
+        'SELECT * FROM documents WHERE id = $1 AND faculty_id = $2',
+        [id, context.facultyId]
+      );
+      
+      if (rows.length === 0) {
+        throw new GraphQLError('Document not found or unauthorized.');
+      }
+
+      const document = rows[0];
+      
+      // Delete file from filesystem
+      try {
+        fs.unlinkSync(document.file_path);
+      } catch (err) {
+        console.warn('Could not delete file from filesystem:', err.message);
+      }
+
+      // Delete from database
+      await db.query('DELETE FROM documents WHERE id = $1', [id]);
+      
+      return `Document '${document.original_name}' deleted successfully`;
+    },
+
+    updateDocumentDescription: async (_, { id, description }, context) => {
+      requireAuth(context);
+      
+      const { rows } = await db.query(
+        'UPDATE documents SET description = $1 WHERE id = $2 AND faculty_id = $3 RETURNING *',
+        [description, id, context.facultyId]
+      );
+      
+      if (rows.length === 0) {
+        throw new GraphQLError('Document not found or unauthorized.');
+      }
+      
+      return mapDocument(rows[0]);
     }
   }
 };

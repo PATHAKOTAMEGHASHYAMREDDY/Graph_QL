@@ -26,6 +26,18 @@ const typeDefs = `
     debug: DebugInfo
   }
 
+  # ── Document (Uploaded Files) ─────────────────────────────────────────────
+  type Document {
+    id: Int!
+    facultyId: Int!
+    filename: String!
+    originalName: String!
+    fileSize: Int
+    mimeType: String
+    uploadDate: String
+    description: String
+  }
+
   # ── Student (User) ────────────────────────────────────────────────────────
   type User {
     id: Int!
@@ -45,6 +57,8 @@ const typeDefs = `
     users: [User]
     user(id: Int!): User
     me: Faculty
+    myDocuments: [Document]  # Get all documents for logged-in faculty
+    allDocuments: [Document]  # Get all documents (admin only)
   }
 
   # ── Mutations ─────────────────────────────────────────────────────────────
@@ -59,6 +73,10 @@ const typeDefs = `
     updateUser(id: Int!, name: String, email: String): User
     deleteUser(id: Int!): String
     updateMarks(id: Int!, english: Int!, tamil: Int!, maths: Int!): User
+
+    # Documents (requires auth)
+    deleteDocument(id: Int!): String
+    updateDocumentDescription(id: Int!, description: String): Document
   }
 `;
 

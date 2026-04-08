@@ -9,6 +9,7 @@ const pool = new Pool({
 async function migrate() {
   const client = await pool.connect();
   try {
+    // Existing migration for class_section
     await client.query(`
       DO $migr$ BEGIN
         IF NOT EXISTS (
@@ -20,6 +21,23 @@ async function migrate() {
       END $migr$
     `);
     console.log('✅ faculty.class_section column OK');
+
+    // Create documents table to track uploaded files
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS documents (
+        id SERIAL PRIMARY KEY,
+        faculty_id INTEGER REFERENCES faculty(id) ON DELETE CASCADE,
+        filename VARCHAR(255) NOT NULL,
+        original_name VARCHAR(255) NOT NULL,
+        file_path TEXT NOT NULL,
+        file_size BIGINT,
+        mime_type VARCHAR(100),
+        upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        description TEXT
+      )
+    `);
+    console.log('✅ documents table OK');
+
     console.log('🎉 Migration complete!');
   } catch (e) {
     console.error('❌ Migration failed:', e.message);
