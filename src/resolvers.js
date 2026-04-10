@@ -99,6 +99,61 @@ const resolvers = {
       return rows.map(mapStudent);
     },
 
+    // New paginated query with search and backend validation
+    paginatedUsers: async (_, { page = 1, pageSize = 5, search = '' }, context) => {
+      requireAuth(context);
+
+      // Backend validation for pagination parameters
+      if (page < 1) {
+        throw new GraphQLError('Page number must be at least 1');
+      }
+      if (pageSize < 1 || pageSize > 100) {
+        throw new GraphQLError('Page size must be between 1 and 100');
+      }
+
+      // Build search query
+      let query = 'SELECT * FROM users WHERE faculty_id = $1';
+      let countQuery = 'SELECT COUNT(*) FROM users WHERE faculty_id = $1';
+      const params = [context.facultyId];
+      
+      if (search && search.trim()) {
+        const searchTerm = `%${search.trim().toLowerCase()}%`;
+        query += ' AND (LOWER(name) LIKE $2 OR LOWER(email) LIKE $2 OR CAST(id AS TEXT) LIKE $2)';
+        countQuery += ' AND (LOWER(name) LIKE $2 OR LOWER(email) LIKE $2 OR CAST(id AS TEXT) LIKE $2)';
+        params.push(searchTerm);
+      }
+
+      // Get total count
+      const { rows: countRows } = await db.query(countQuery, params);
+      const totalCount = parseInt(countRows[0].count);
+      const totalPages = Math.ceil(totalCount / pageSize) || 1;
+
+      // Validate page number against total pages
+      if (page > totalPages && totalCount > 0) {
+        throw new GraphQLError(`Page ${page} does not exist. Total pages: ${totalPages}`);
+      }
+
+      // Add pagination
+      const offset = (page - 1) * pageSize;
+      query += ` ORDER BY id ASC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+      params.push(pageSize, offset);
+
+      // Get paginated results
+      const { rows } = await db.query(query, params);
+
+      return {
+        users: rows.map(mapStudent),
+        pagination: {
+          currentPage: page,
+          pageSize,
+          totalPages,
+          totalCount,
+          hasNextPage: page < totalPages,
+          hasPreviousPage: page > 1
+        }
+      };
+    },
+
     user: async (_, { id }, context) => {
       requireAuth(context);
       const { rows } = await db.query(

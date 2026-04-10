@@ -52,10 +52,33 @@ const typeDefs = `
     mathsStatus: String
   }
 
+  # ── Pagination Types ──────────────────────────────────────────────────────
+  type PaginationInfo {
+    currentPage: Int!
+    pageSize: Int!
+    totalPages: Int!
+    totalCount: Int!
+    hasNextPage: Boolean!
+    hasPreviousPage: Boolean!
+  }
+
+  type PaginatedUsers {
+    users: [User!]!
+    pagination: PaginationInfo!
+  }
+
   # ── Queries ───────────────────────────────────────────────────────────────
   type Query {
     users: [User]
     user(id: Int!): User
+    
+    # New paginated query with search
+    paginatedUsers(
+      page: Int = 1
+      pageSize: Int = 5
+      search: String
+    ): PaginatedUsers!
+    
     me: Faculty
     myDocuments: [Document]  # Get all documents for logged-in faculty
     allDocuments: [Document]  # Get all documents (admin only)

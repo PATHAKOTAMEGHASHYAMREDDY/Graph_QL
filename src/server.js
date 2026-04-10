@@ -7,11 +7,13 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const rateLimit = require('express-rate-limit');
+const RedisStore = require('rate-limit-redis').default;
 require('dotenv').config();
 const typeDefs = require('./schema');
 const resolvers = require('./resolvers');
 const { verifyToken } = require('./auth');
 const db = require('./db'); // Add database connection
+const redisClient = require('./redis-client'); // Redis client for rate limiting
 
 // REST auth router (POST /api/auth/login, /signup; GET /api/auth/me)
 const restAuthRouter = require('./rest-auth');
@@ -47,23 +49,37 @@ async function startServer() {
   }));
 
   // ════════════════════════════════════════════════════════════════════════
-  // RATE LIMITING CONFIGURATION
+  // RATE LIMITING CONFIGURATION WITH REDIS
   // ════════════════════════════════════════════════════════════════════════
   // Rate limiting prevents API abuse by limiting requests from each IP address
+  // Using Redis for distributed rate limiting and persistence across server restarts
   
+  // Check if Redis is connected
+  const isRedisConnected = redisClient.isOpen;
+  console.log(`🔴 Redis Status: ${isRedisConnected ? 'Connected ✅' : 'Disconnected ⚠️ (using in-memory fallback)'}`);
+
   // Strict limit for auth endpoints (login/signup) - prevent brute force attacks
   const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes window
     max: 5, // Max 5 requests per 15 minutes per IP
     message: {
       error: 'Too many attempts',
-      message: 'Too many login/signup attempts. Please try again after 15 minutes.'
+      message: 'Too many login/signup attempts. Please try again after 15 minutes.',
+      retryAfter: '15 minutes'
     },
     standardHeaders: true,
     legacyHeaders: false,
-    handler: (req, res, next, options) => {
+    store: isRedisConnected ? new RedisStore({
+      sendCommand: (...args) => redisClient.sendCommand(args),
+      prefix: 'rl:auth:',
+    }) : undefined,
+    handler: (req, res) => {
       console.log(`🚫 IP Rate limit hit for IP ${req.ip} on auth endpoint`);
-      res.status(options.statusCode).json(options.message);
+      res.status(429).json({
+        error: 'Too many attempts',
+        message: 'Too many login/signup attempts. Please try again after 15 minutes.',
+        retryAfter: '15 minutes'
+      });
     }
   });
 
@@ -74,18 +90,27 @@ async function startServer() {
     keyGenerator: (req) => {
       // Use email from request body as the key
       const email = req.body?.email || 'unknown';
-      return email.toLowerCase().trim();
+      return `${email.toLowerCase().trim()}`;
     },
     message: {
       error: 'Account temporarily locked',
-      message: 'Too many failed login attempts for this account. Please try again after 5 minutes.'
+      message: 'Too many failed login attempts for this account. Please try again after 5 minutes.',
+      retryAfter: '5 minutes'
     },
     standardHeaders: true,
     legacyHeaders: false,
-    handler: (req, res, next, options) => {
+    store: isRedisConnected ? new RedisStore({
+      sendCommand: (...args) => redisClient.sendCommand(args),
+      prefix: 'rl:account:',
+    }) : undefined,
+    handler: (req, res) => {
       const email = req.body?.email || 'unknown';
       console.log(`🚫 Account Rate limit hit for account: ${email}`);
-      res.status(options.statusCode).json(options.message);
+      res.status(429).json({
+        error: 'Account temporarily locked',
+        message: 'Too many failed login attempts for this account. Please try again after 5 minutes.',
+        retryAfter: '5 minutes'
+      });
     }
   });
 
@@ -95,10 +120,15 @@ async function startServer() {
     max: 20, // Max 20 uploads per hour per IP
     message: {
       error: 'Upload limit exceeded',
-      message: 'Too many file uploads. Please try again after an hour.'
+      message: 'Too many file uploads. Please try again after an hour.',
+      retryAfter: '1 hour'
     },
     standardHeaders: true,
     legacyHeaders: false,
+    store: isRedisConnected ? new RedisStore({
+      sendCommand: (...args) => redisClient.sendCommand(args),
+      prefix: 'rl:upload:',
+    }) : undefined,
   });
 
   // General API limit for other endpoints
@@ -107,10 +137,15 @@ async function startServer() {
     max: 100, // Max 100 requests per minute per IP
     message: {
       error: 'Too many requests',
-      message: 'API rate limit exceeded. Please slow down.'
+      message: 'API rate limit exceeded. Please slow down.',
+      retryAfter: '1 minute'
     },
     standardHeaders: true,
     legacyHeaders: false,
+    store: isRedisConnected ? new RedisStore({
+      sendCommand: (...args) => redisClient.sendCommand(args),
+      prefix: 'rl:general:',
+    }) : undefined,
   });
 
   // Apply general rate limiting to all requests
@@ -273,7 +308,11 @@ async function startServer() {
   app.get('/health', (req, res) => {
     res.json({ 
       status: 'ok', 
-      message: 'Server is running', 
+      message: 'Server is running',
+      redis: {
+        connected: redisClient.isOpen,
+        status: redisClient.isOpen ? 'Connected ✅' : 'Disconnected (using in-memory fallback)'
+      },
       endpoints: {
         graphql : '/graphql',
         login   : 'POST /api/auth/login',
@@ -285,7 +324,8 @@ async function startServer() {
         auth: '5 requests per 15 minutes per IP',
         account: '3 login attempts per 5 minutes per email',
         upload: '20 uploads per hour',
-        general: '100 requests per minute'
+        general: '100 requests per minute',
+        storage: redisClient.isOpen ? 'Redis (persistent)' : 'In-Memory (resets on restart)'
       }
     });
   });
@@ -293,6 +333,7 @@ async function startServer() {
   app.listen(PORT, () => {
     console.log(`🚀 GraphQL  → http://localhost:${PORT}/graphql`);
     console.log(`🔐 REST Auth→ http://localhost:${PORT}/api/auth/login | /signup | /me`);
+    console.log(`🔴 Redis    → ${redisClient.isOpen ? 'Connected ✅' : 'Disconnected ⚠️ (using in-memory fallback)'}`);
     console.log(`⏱️  Rate Limits: Auth=5/15min per IP, Account=3/5min per email, Upload=20/hr, General=100/min`);
   });
 }
