@@ -100,7 +100,7 @@ const resolvers = {
     },
 
     // New paginated query with search and backend validation
-    paginatedUsers: async (_, { page = 1, pageSize = 5, search = '' }, context) => {
+    paginatedUsers: async (_, { page = 1, pageSize = 5, search = '', sortBy = 'id', sortOrder = 'ASC' }, context) => {
       requireAuth(context);
 
       // Backend validation for pagination parameters
@@ -109,6 +109,18 @@ const resolvers = {
       }
       if (pageSize < 1 || pageSize > 100) {
         throw new GraphQLError('Page size must be between 1 and 100');
+      }
+
+      // Validate sortBy column (prevent SQL injection)
+      const allowedSortColumns = ['id', 'name', 'email', 'english', 'tamil', 'maths', 'total'];
+      if (!allowedSortColumns.includes(sortBy)) {
+        throw new GraphQLError(`Invalid sort column. Allowed: ${allowedSortColumns.join(', ')}`);
+      }
+
+      // Validate sortOrder (prevent SQL injection)
+      const normalizedSortOrder = sortOrder.toUpperCase();
+      if (normalizedSortOrder !== 'ASC' && normalizedSortOrder !== 'DESC') {
+        throw new GraphQLError('Sort order must be ASC or DESC');
       }
 
       // Build search query
@@ -133,9 +145,9 @@ const resolvers = {
         throw new GraphQLError(`Page ${page} does not exist. Total pages: ${totalPages}`);
       }
 
-      // Add pagination
+      // Add sorting and pagination
       const offset = (page - 1) * pageSize;
-      query += ` ORDER BY id ASC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+      query += ` ORDER BY ${sortBy} ${normalizedSortOrder} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
       params.push(pageSize, offset);
 
       // Get paginated results

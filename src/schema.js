@@ -72,11 +72,13 @@ const typeDefs = `
     users: [User]
     user(id: Int!): User
     
-    # New paginated query with search
+    # New paginated query with search and sorting
     paginatedUsers(
       page: Int = 1
       pageSize: Int = 5
       search: String
+      sortBy: String = "id"
+      sortOrder: String = "ASC"
     ): PaginatedUsers!
     
     me: Faculty
