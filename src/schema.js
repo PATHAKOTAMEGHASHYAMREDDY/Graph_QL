@@ -22,6 +22,7 @@ const typeDefs = `
 
   type AuthPayload {
     token: String!
+    refreshToken: String!
     faculty: Faculty!
     debug: DebugInfo
   }
@@ -92,6 +93,8 @@ const typeDefs = `
     sendOtp(email: String!): String
     verifyOtpAndRegister(name: String!, email: String!, otp: String!, password: String!, classSection: String!): AuthPayload
     loginFaculty(email: String!, password: String!): AuthPayload
+    refreshAccessToken(refreshToken: String!): AuthPayload
+    logout(refreshToken: String!): String
 
     # Student CRUD (requires auth)
     createUser(name: String!, email: String!): User

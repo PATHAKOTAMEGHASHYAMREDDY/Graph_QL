@@ -1,5 +1,5 @@
 const db = require('./db');
-const { generateOtp, sendOtpEmail, signToken, verifyToken, hashPassword, comparePassword } = require('./auth');
+const { generateOtp, sendOtpEmail, signAccessToken, signRefreshToken, verifyToken, verifyTokenWithError, hashPassword, comparePassword } = require('./auth');
 const { GraphQLError } = require('graphql');
 
 // In-memory rate limiting store for GraphQL login
@@ -85,6 +85,65 @@ function mapStudent(row) {
     tamilStatus: row.tamil_status,
     mathsStatus: row.maths_status
   };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// REFRESH TOKEN HELPERS
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Save refresh token to database
+async function saveRefreshToken(facultyId, refreshToken, userAgent = null, ipAddress = null) {
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+  await db.query(
+    `INSERT INTO refresh_tokens (faculty_id, token, expires_at, user_agent, ip_address)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [facultyId, refreshToken, expiresAt, userAgent, ipAddress]
+  );
+}
+
+// Verify refresh token exists and is valid
+async function verifyRefreshToken(refreshToken) {
+  const { rows } = await db.query(
+    `SELECT * FROM refresh_tokens 
+     WHERE token = $1 AND expires_at > NOW()`,
+    [refreshToken]
+  );
+  
+  if (rows.length === 0) {
+    return null;
+  }
+  
+  // Update last_used_at
+  await db.query(
+    `UPDATE refresh_tokens SET last_used_at = NOW() WHERE token = $1`,
+    [refreshToken]
+  );
+  
+  return rows[0];
+}
+
+// Delete refresh token (logout)
+async function deleteRefreshToken(refreshToken) {
+  await db.query(
+    `DELETE FROM refresh_tokens WHERE token = $1`,
+    [refreshToken]
+  );
+}
+
+// Delete all refresh tokens for a faculty (logout all devices)
+async function deleteAllRefreshTokens(facultyId) {
+  await db.query(
+    `DELETE FROM refresh_tokens WHERE faculty_id = $1`,
+    [facultyId]
+  );
+}
+
+// Clean up expired tokens (can be called periodically)
+async function cleanupExpiredTokens() {
+  const result = await db.query(
+    `DELETE FROM refresh_tokens WHERE expires_at < NOW()`
+  );
+  return result.rowCount;
 }
 
 const resolvers = {
@@ -277,9 +336,15 @@ const resolvers = {
         classSection: facultyRows[0].class_section,
         createdAt: facultyRows[0].created_at ? facultyRows[0].created_at.toISOString() : null
       };
-      const token = signToken({ facultyId: faculty.id, email: faculty.email });
+      
+      // Generate access token (5 minutes) and refresh token (7 days)
+      const accessToken = signAccessToken({ facultyId: faculty.id, email: faculty.email });
+      const refreshToken = signRefreshToken({ facultyId: faculty.id, email: faculty.email });
+      
+      // Save refresh token to database
+      await saveRefreshToken(faculty.id, refreshToken);
 
-      return { token, faculty };
+      return { token: accessToken, refreshToken, faculty };
     },
 
     loginFaculty: async (_, { email, password }) => {
@@ -347,10 +412,17 @@ const resolvers = {
         classSection: faculty.class_section,
         createdAt: faculty.created_at ? faculty.created_at.toISOString() : null
       };
-      const token = signToken({ facultyId: faculty.id, email: faculty.email });
+      
+      // Generate access token (5 minutes) and refresh token (7 days)
+      const accessToken = signAccessToken({ facultyId: faculty.id, email: faculty.email });
+      const refreshToken = signRefreshToken({ facultyId: faculty.id, email: faculty.email });
+      
+      // Save refresh token to database
+      await saveRefreshToken(faculty.id, refreshToken);
 
       return { 
-        token, 
+        token: accessToken,
+        refreshToken,
         faculty: facultyData,
         // Add debug info to successful response
         debug: {
@@ -359,6 +431,66 @@ const resolvers = {
           timestamp: new Date().toISOString()
         }
       };
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // REFRESH ACCESS TOKEN - Automatically renew expired access token
+    // ═══════════════════════════════════════════════════════════════════════
+    refreshAccessToken: async (_, { refreshToken }) => {
+      // Verify refresh token in database
+      const tokenRecord = await verifyRefreshToken(refreshToken);
+      
+      if (!tokenRecord) {
+        throw new GraphQLError('Invalid or expired refresh token. Please log in again.', {
+          extensions: { code: 'INVALID_REFRESH_TOKEN' }
+        });
+      }
+      
+      // Verify JWT signature
+      const decoded = verifyToken(refreshToken);
+      if (!decoded || !decoded.facultyId) {
+        throw new GraphQLError('Invalid refresh token. Please log in again.', {
+          extensions: { code: 'INVALID_REFRESH_TOKEN' }
+        });
+      }
+      
+      // Get faculty data
+      const { rows } = await db.query('SELECT * FROM faculty WHERE id = $1', [decoded.facultyId]);
+      if (rows.length === 0) {
+        throw new GraphQLError('Faculty not found.', {
+          extensions: { code: 'USER_NOT_FOUND' }
+        });
+      }
+      
+      const faculty = {
+        ...rows[0],
+        classSection: rows[0].class_section,
+        createdAt: rows[0].created_at ? rows[0].created_at.toISOString() : null
+      };
+      
+      // Generate new access token (5 minutes)
+      const newAccessToken = signAccessToken({ facultyId: faculty.id, email: faculty.email });
+      
+      console.log(`🔄 Access token refreshed for ${faculty.email}`);
+      
+      return {
+        token: newAccessToken,
+        refreshToken, // Return same refresh token
+        faculty,
+        debug: {
+          type: 'TOKEN_REFRESHED',
+          timestamp: new Date().toISOString()
+        }
+      };
+    },
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // LOGOUT - Delete refresh token
+    // ═══════════════════════════════════════════════════════════════════════
+    logout: async (_, { refreshToken }) => {
+      await deleteRefreshToken(refreshToken);
+      console.log(`👋 User logged out`);
+      return 'Logged out successfully';
     },
 
     // ── Student CRUD (all require auth) ───────────────────────────────────

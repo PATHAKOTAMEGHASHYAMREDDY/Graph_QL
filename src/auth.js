@@ -42,15 +42,39 @@ async function sendOtpEmail(email, otp) {
 }
 
 // ---------- JWT helpers ----------
-function signToken(payload) {
+// Access token: Short-lived (1 minute)
+function signAccessToken(payload) {
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: '1m' });
+}
+
+// Refresh token: Long-lived (7 days)
+function signRefreshToken(payload) {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
+}
+
+// Legacy function for backward compatibility
+function signToken(payload) {
+  return signAccessToken(payload);
 }
 
 function verifyToken(token) {
   try {
     return jwt.verify(token, JWT_SECRET);
-  } catch {
+  } catch (err) {
     return null;
+  }
+}
+
+// Verify and decode token with error details
+function verifyTokenWithError(token) {
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    return { valid: true, decoded, error: null };
+  } catch (err) {
+    if (err.name === 'TokenExpiredError') {
+      return { valid: false, decoded: null, error: 'expired' };
+    }
+    return { valid: false, decoded: null, error: 'invalid' };
   }
 }
 
@@ -67,7 +91,10 @@ module.exports = {
   generateOtp,
   sendOtpEmail,
   signToken,
+  signAccessToken,
+  signRefreshToken,
   verifyToken,
+  verifyTokenWithError,
   hashPassword,
   comparePassword,
 };

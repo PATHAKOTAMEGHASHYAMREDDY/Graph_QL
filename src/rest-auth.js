@@ -20,7 +20,45 @@
 const express = require('express');
 const router  = express.Router();
 const db      = require('./db');
-const { signToken, verifyToken, hashPassword, comparePassword } = require('./auth');
+const { signAccessToken, signRefreshToken, verifyToken, verifyTokenWithError, hashPassword, comparePassword } = require('./auth');
+
+// ── Helper functions for refresh tokens ──────────────────────────────────────
+
+async function saveRefreshToken(facultyId, refreshToken, userAgent = null, ipAddress = null) {
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+  await db.query(
+    `INSERT INTO refresh_tokens (faculty_id, token, expires_at, user_agent, ip_address)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [facultyId, refreshToken, expiresAt, userAgent, ipAddress]
+  );
+}
+
+async function verifyRefreshToken(refreshToken) {
+  const { rows } = await db.query(
+    `SELECT * FROM refresh_tokens 
+     WHERE token = $1 AND expires_at > NOW()`,
+    [refreshToken]
+  );
+  
+  if (rows.length === 0) {
+    return null;
+  }
+  
+  // Update last_used_at
+  await db.query(
+    `UPDATE refresh_tokens SET last_used_at = NOW() WHERE token = $1`,
+    [refreshToken]
+  );
+  
+  return rows[0];
+}
+
+async function deleteRefreshToken(refreshToken) {
+  await db.query(
+    `DELETE FROM refresh_tokens WHERE token = $1`,
+    [refreshToken]
+  );
+}
 
 // ── Middleware: verify JWT Bearer token ──────────────────────────────────────
 
@@ -122,9 +160,16 @@ router.post('/signup', async (req, res) => {
       createdAt   : rows[0].created_at ? rows[0].created_at.toISOString() : null,
     };
 
-    const token = signToken({ facultyId: faculty.id, email: faculty.email });
+    // Generate access token (5 minutes) and refresh token (7 days)
+    const accessToken = signAccessToken({ facultyId: faculty.id, email: faculty.email });
+    const refreshToken = signRefreshToken({ facultyId: faculty.id, email: faculty.email });
+    
+    // Save refresh token to database
+    const userAgent = req.headers['user-agent'] || null;
+    const ipAddress = req.ip || req.connection.remoteAddress || null;
+    await saveRefreshToken(faculty.id, refreshToken, userAgent, ipAddress);
 
-    return res.status(201).json({ token, faculty });
+    return res.status(201).json({ token: accessToken, refreshToken, faculty });
 
   } catch (err) {
     console.error('[REST /signup] Error:', err);
@@ -191,9 +236,16 @@ router.post('/login', async (req, res) => {
       createdAt   : facultyRow.created_at ? facultyRow.created_at.toISOString() : null,
     };
 
-    const token = signToken({ facultyId: faculty.id, email: faculty.email });
+    // Generate access token (5 minutes) and refresh token (7 days)
+    const accessToken = signAccessToken({ facultyId: faculty.id, email: faculty.email });
+    const refreshToken = signRefreshToken({ facultyId: faculty.id, email: faculty.email });
+    
+    // Save refresh token to database
+    const userAgent = req.headers['user-agent'] || null;
+    const ipAddress = req.ip || req.connection.remoteAddress || null;
+    await saveRefreshToken(faculty.id, refreshToken, userAgent, ipAddress);
 
-    return res.status(200).json({ token, faculty });
+    return res.status(200).json({ token: accessToken, refreshToken, faculty });
 
   } catch (err) {
     console.error('[REST /login] Error:', err);
@@ -233,6 +285,115 @@ router.get('/me', verifyRestToken, async (req, res) => {
 
   } catch (err) {
     console.error('[REST /me] Error:', err);
+    return res.status(500).json({ error: 'Internal Server Error', message: err.message });
+  }
+});
+
+// ── POST /api/auth/refresh ───────────────────────────────────────────────────
+
+/**
+ * Refresh access token using refresh token.
+ * 
+ * Body: { refreshToken }
+ * 
+ * Returns 200 { token, refreshToken, faculty } on success.
+ * Returns 401 for invalid/expired refresh token.
+ */
+router.post('/refresh', async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      return res.status(400).json({
+        error  : 'Bad Request',
+        message: 'refreshToken is required.',
+      });
+    }
+
+    // Verify refresh token in database
+    const tokenRecord = await verifyRefreshToken(refreshToken);
+    
+    if (!tokenRecord) {
+      return res.status(401).json({
+        error  : 'Unauthorized',
+        message: 'Invalid or expired refresh token. Please log in again.',
+      });
+    }
+    
+    // Verify JWT signature
+    const decoded = verifyToken(refreshToken);
+    if (!decoded || !decoded.facultyId) {
+      return res.status(401).json({
+        error  : 'Unauthorized',
+        message: 'Invalid refresh token. Please log in again.',
+      });
+    }
+    
+    // Get faculty data
+    const { rows } = await db.query(
+      'SELECT id, name, email, class_section, created_at FROM faculty WHERE id = $1',
+      [decoded.facultyId]
+    );
+    
+    if (rows.length === 0) {
+      return res.status(401).json({
+        error  : 'Unauthorized',
+        message: 'Faculty not found.',
+      });
+    }
+    
+    const faculty = {
+      id          : rows[0].id,
+      name        : rows[0].name,
+      email       : rows[0].email,
+      classSection: rows[0].class_section,
+      createdAt   : rows[0].created_at ? rows[0].created_at.toISOString() : null,
+    };
+    
+    // Generate new access token (5 minutes)
+    const newAccessToken = signAccessToken({ facultyId: faculty.id, email: faculty.email });
+    
+    console.log(`🔄 Access token refreshed for ${faculty.email}`);
+    
+    return res.status(200).json({
+      token: newAccessToken,
+      refreshToken, // Return same refresh token
+      faculty
+    });
+
+  } catch (err) {
+    console.error('[REST /refresh] Error:', err);
+    return res.status(500).json({ error: 'Internal Server Error', message: err.message });
+  }
+});
+
+// ── POST /api/auth/logout ────────────────────────────────────────────────────
+
+/**
+ * Logout - delete refresh token from database.
+ * 
+ * Body: { refreshToken }
+ * 
+ * Returns 200 { message } on success.
+ */
+router.post('/logout', async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      return res.status(400).json({
+        error  : 'Bad Request',
+        message: 'refreshToken is required.',
+      });
+    }
+
+    await deleteRefreshToken(refreshToken);
+    console.log(`👋 User logged out`);
+    
+    return res.status(200).json({ message: 'Logged out successfully' });
+
+  } catch (err) {
+    console.error('[REST /logout] Error:', err);
     return res.status(500).json({ error: 'Internal Server Error', message: err.message });
   }
 });
