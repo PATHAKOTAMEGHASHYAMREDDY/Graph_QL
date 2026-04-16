@@ -8,17 +8,20 @@ const path = require('path');
 const fs = require('fs');
 const rateLimit = require('express-rate-limit');
 const RedisStore = require('rate-limit-redis').default;
+const http = require('http');
 require('dotenv').config();
 const typeDefs = require('./schema');
 const resolvers = require('./resolvers');
 const { verifyToken } = require('./auth');
 const db = require('./db'); // Add database connection
 const redisClient = require('./redis-client'); // Redis client for rate limiting
+const { setupWebSocket } = require('./websocket'); // WebSocket support
 
 // REST auth router (POST /api/auth/login, /signup; GET /api/auth/me)
 const restAuthRouter = require('./rest-auth');
 
 const app = express();
+const httpServer = http.createServer(app);
 const PORT = process.env.PORT || 4000;
 
 const server = new ApolloServer({
@@ -290,17 +293,22 @@ async function startServer() {
 
   // ── GraphQL endpoint ────────────────────────────────────────────────────
   app.use('/graphql', expressMiddleware(server, {
-    // Extract JWT from Authorization header and pass facultyId in context
+    // Extract JWT from Authorization header and pass facultyId or studentId in context
     context: async ({ req }) => {
       const authHeader = req.headers.authorization || '';
       if (authHeader.startsWith('Bearer ')) {
         const token = authHeader.slice(7);
         const decoded = verifyToken(token);
-        if (decoded && decoded.facultyId) {
-          return { facultyId: decoded.facultyId, email: decoded.email };
+        if (decoded) {
+          // Check if it's a faculty token or student token
+          if (decoded.facultyId) {
+            return { facultyId: decoded.facultyId, email: decoded.email, userType: 'faculty' };
+          } else if (decoded.studentId) {
+            return { studentId: decoded.studentId, email: decoded.email, userType: 'student' };
+          }
         }
       }
-      return { facultyId: null, email: null };
+      return { facultyId: null, studentId: null, email: null, userType: null };
     }
   }));
 
@@ -330,12 +338,16 @@ async function startServer() {
     });
   });
 
-  app.listen(PORT, () => {
+  httpServer.listen(PORT, () => {
     console.log(`🚀 GraphQL  → http://localhost:${PORT}/graphql`);
+    console.log(`🔌 WebSocket→ ws://localhost:${PORT}/ws`);
     console.log(`🔐 REST Auth→ http://localhost:${PORT}/api/auth/login | /signup | /me`);
     console.log(`🔴 Redis    → ${redisClient.isOpen ? 'Connected ✅' : 'Disconnected ⚠️ (using in-memory fallback)'}`);
     console.log(`⏱️  Rate Limits: Auth=5/15min per IP, Account=3/5min per email, Upload=20/hr, General=100/min`);
   });
+  
+  // Setup WebSocket server
+  setupWebSocket(httpServer);
 }
 
 startServer();

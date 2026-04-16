@@ -6,6 +6,23 @@ const typeDefs = `
     email: String!
     classSection: String
     createdAt: String
+    role: Role
+  }
+
+  # ── Role and Permissions ──────────────────────────────────────────────────
+  type Role {
+    id: Int!
+    name: String!
+    description: String
+    permissions: [Permission!]!
+  }
+
+  type Permission {
+    id: Int!
+    name: String!
+    description: String
+    resource: String!
+    action: String!
   }
 
   # Debug info for client-side rate limiting visibility
@@ -44,6 +61,7 @@ const typeDefs = `
     id: Int!
     name: String!
     email: String!
+    section: String
     english: Int
     tamil: Int
     maths: Int
@@ -51,6 +69,15 @@ const typeDefs = `
     englishStatus: String
     tamilStatus: String
     mathsStatus: String
+    role: Role
+  }
+
+  # ── Student Auth ──────────────────────────────────────────────────────────
+  type StudentAuthPayload {
+    token: String!
+    refreshToken: String!
+    student: User!
+    debug: DebugInfo
   }
 
   # ── Pagination Types ──────────────────────────────────────────────────────
@@ -85,16 +112,31 @@ const typeDefs = `
     me: Faculty
     myDocuments: [Document]  # Get all documents for logged-in faculty
     allDocuments: [Document]  # Get all documents (admin only)
+    
+    # Student queries
+    myProfile: User  # Get logged-in student's profile
+    
+    # RBAC queries
+    myPermissions: [String!]!  # Get current user's permissions
+    myRole: Role  # Get current user's role
   }
 
   # ── Mutations ─────────────────────────────────────────────────────────────
   type Mutation {
-    # Auth
+    # Faculty Auth
     sendOtp(email: String!): String
-    verifyOtpAndRegister(name: String!, email: String!, otp: String!, password: String!, classSection: String!): AuthPayload
+    verifyOtpAndRegister(name: String!, email: String!, otp: String!, password: String!, section: String!): AuthPayload
     loginFaculty(email: String!, password: String!): AuthPayload
     refreshAccessToken(refreshToken: String!): AuthPayload
     logout(refreshToken: String!): String
+
+    # Student Auth
+    sendStudentOtp(email: String!): String
+    verifyStudentOtpAndRegister(name: String!, email: String!, otp: String!, password: String!, section: String!): StudentAuthPayload
+    registerStudent(name: String!, email: String!, password: String!): StudentAuthPayload
+    loginStudent(email: String!, password: String!): StudentAuthPayload
+    refreshStudentAccessToken(refreshToken: String!): StudentAuthPayload
+    logoutStudent(refreshToken: String!): String
 
     # Student CRUD (requires auth)
     createUser(name: String!, email: String!): User
