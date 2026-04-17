@@ -103,11 +103,21 @@ function notifyStudentMarksUpdate(studentId, marksData) {
   const ws = studentConnections.get(studentId);
   
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({
-      type: 'marks_updated',
-      data: marksData
-    }));
-    console.log(`📤 Sent marks update to student ${studentId}`);
+    // Check if this is an account deletion message
+    if (marksData.type === 'account_deleted') {
+      ws.send(JSON.stringify({
+        type: 'account_deleted',
+        message: marksData.message || 'Your account has been deleted'
+      }));
+      console.log(`🚫 Sent account deletion notification to student ${studentId}`);
+    } else {
+      // Regular marks/profile update
+      ws.send(JSON.stringify({
+        type: 'marks_updated',
+        data: marksData
+      }));
+      console.log(`📤 Sent marks update to student ${studentId}`);
+    }
     return true;
   }
   

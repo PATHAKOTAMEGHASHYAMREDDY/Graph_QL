@@ -995,21 +995,41 @@ const resolvers = {
 
     updateUser: async (_, { id, name, email }, context) => {
       requireAuth(context);
-      const updates = [];
-      const values = [];
-
-      if (name) { values.push(name); updates.push(`name = $${values.length}`); }
-      if (email) { values.push(email); updates.push(`email = $${values.length}`); }
-
-      values.push(id);
-      values.push(context.facultyId);
+      
+      // Check permission
+      const userType = context.userType || 'faculty';
+      const userId = context.facultyId || context.studentId;
+      await requirePermission(userId, userType, 'students.update');
+      
+      // Faculty can only update name, not email
+      if (email) {
+        throw new GraphQLError('Faculty cannot update student email. Only name can be updated.');
+      }
+      
+      if (!name) {
+        throw new GraphQLError('Name is required for update.');
+      }
 
       const { rows } = await db.query(
-        `UPDATE users SET ${updates.join(', ')} WHERE id = $${values.length - 1} AND faculty_id = $${values.length} RETURNING *`,
-        values
+        `UPDATE users SET name = $1 WHERE id = $2 RETURNING *`,
+        [name, id]
       );
-      if (!rows[0]) throw new GraphQLError('Student not found or unauthorized.');
-      return mapStudent(rows[0]);
+      
+      if (!rows[0]) throw new GraphQLError('Student not found.');
+      
+      const updatedStudent = mapStudent(rows[0]);
+      
+      // Send real-time update to student via WebSocket
+      const { notifyStudentMarksUpdate } = require('./websocket');
+      const notified = notifyStudentMarksUpdate(id, updatedStudent);
+      
+      if (notified) {
+        console.log(`✅ Real-time name update sent to student ${id}`);
+      } else {
+        console.log(`ℹ️  Student ${id} not connected to WebSocket`);
+      }
+      
+      return updatedStudent;
     },
 
     updateMarks: async (_, { id, english, tamil, maths }, context) => {
@@ -1055,12 +1075,56 @@ const resolvers = {
 
     deleteUser: async (_, { id }, context) => {
       requireAuth(context);
-      const result = await db.query(
-        'DELETE FROM users WHERE id = $1 AND faculty_id = $2',
-        [id, context.facultyId]
+      
+      // Check permission
+      const userType = context.userType || 'faculty';
+      const userId = context.facultyId || context.studentId;
+      await requirePermission(userId, userType, 'students.delete');
+      
+      // Get faculty's section
+      const { rows: facultyRows } = await db.query(
+        'SELECT section FROM faculty WHERE id = $1',
+        [context.facultyId]
       );
-      if (result.rowCount === 0) throw new GraphQLError('Student not found or unauthorized.');
-      return `Student with id ${id} deleted successfully`;
+      
+      if (facultyRows.length === 0) {
+        throw new GraphQLError('Faculty not found.');
+      }
+      
+      const facultySection = facultyRows[0].section;
+      
+      // Check if student exists and is in the same section
+      const { rows: studentRows } = await db.query(
+        'SELECT id, name, email FROM users WHERE id = $1 AND section = $2',
+        [id, facultySection]
+      );
+      
+      if (studentRows.length === 0) {
+        throw new GraphQLError('Student not found or unauthorized.');
+      }
+      
+      const student = studentRows[0];
+      console.log(`🗑️  Deleting student: ${student.name} (${student.email})`);
+      
+      // Delete all refresh tokens for this student (logs them out)
+      await deleteAllStudentRefreshTokens(id);
+      console.log(`✅ Deleted all refresh tokens for student ${id}`);
+      
+      // Send WebSocket notification to kick student out
+      const { notifyStudentMarksUpdate } = require('./websocket');
+      notifyStudentMarksUpdate(id, {
+        type: 'account_deleted',
+        message: 'Your account has been deleted by faculty'
+      });
+      
+      // Delete the student record
+      const result = await db.query(
+        'DELETE FROM users WHERE id = $1',
+        [id]
+      );
+      
+      console.log(`✅ Student ${student.name} deleted successfully`);
+      return `Student ${student.name} deleted successfully`;
     },
 
     // ── Document Mutations ─────────────────────────────────────────────────
